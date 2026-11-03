@@ -3,7 +3,7 @@ import { expect, type Locator, type Page, test } from '@playwright/test'
 import { freshEmail } from '../helpers/accounts'
 import { deleteSignInCodes, deleteUsers, latestSignInCode, setRole } from '../helpers/db'
 import { signInUser } from '../helpers/login'
-import { card, factUrl, newStudent, skipSplash } from '../helpers/student'
+import { card, chooseAndComeBack, factUrl, newStudent, skipSplash } from '../helpers/student'
 import {
   colourOf,
   hasEdgeLine,
@@ -201,8 +201,8 @@ test('AC2: the chosen answer is the dark accent tint with light accent text [ans
   try {
     await openIn(page, factUrl('Where are you right now?'), 'dark')
     const nepal = card(page, 'Where are you right now?', 'Nepal')
-    await nepal.click()
-    await expect(nepal).toHaveAttribute('aria-checked', 'true')
+    // The tap moves on by itself: the chosen card is read back on its question.
+    await chooseAndComeBack(page, nepal)
     await expectDarkChosen(nepal, 'Nepal')
   } finally {
     await deleteUsers([email])
@@ -313,18 +313,23 @@ test('AC4: a 44px theme toggle sits top-right on the logo line [admin sign-in]',
   ).toBeLessThan(8)
 })
 
-test('AC4: a 44px theme toggle sits top-right beside Sign out [admin console]', async ({
+test('AC4: a 44px theme toggle sits top-right beside the account button [admin console]', async ({
   page,
 }) => {
-  // The console has no steel panel: the toggle sits in the top bar beside Sign out (edge case).
+  // The console has no steel panel: the toggle sits in the top bar just before the account
+  // button, the bar's last control; Sign out is an item of the account's menu (edge case).
   const email = await newAdmin(page, 'dm-ac4-admin')
   try {
-    const signOutButton = (p: Page) => p.getByRole('button', { name: 'Sign out', exact: true })
-    await expectToggle(page, '/admin', signOutButton)
+    const accountButton = (p: Page) => p.getByRole('button', { name: /^Account: / })
+    await expectToggle(page, '/admin', accountButton)
     const toggle = await boxOf(themeToggle(page))
-    const signOut = await boxOf(signOutButton(page))
-    expect(Math.abs(centreY(toggle) - centreY(signOut)), 'on the Sign out line').toBeLessThan(8)
-    expect(signOut.x - (toggle.x + toggle.width), 'beside Sign out').toBeLessThan(24)
+    const account = await boxOf(accountButton(page))
+    expect(Math.abs(centreY(toggle) - centreY(account)), 'on the account line').toBeLessThan(8)
+    expect(account.x - (toggle.x + toggle.width), 'beside the account button').toBeLessThan(24)
+    await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toHaveCount(0)
+    await accountButton(page).click()
+    const menu = page.getByRole('menu', { name: 'Account' })
+    await expect(menu.getByRole('menuitem', { name: 'Sign out' })).toBeVisible()
   } finally {
     await deleteUsers([email])
   }
@@ -510,11 +515,12 @@ test('AC8: text is at least 4.5:1 and large text 3:1 in dark [step 01 impact lin
   const email = await newStudent(page, 'dm-ac8-facts')
   try {
     await openIn(page, factUrl('Amount'), 'dark')
-    await card(page, 'Amount', 'Not sure').click()
+    // Each tap moves on by itself: its impact line and saved note are read back on its question.
+    await chooseAndComeBack(page, card(page, 'Amount', 'Not sure'))
     await expect(page.getByText('Saved. Tap another answer to change it.')).toBeVisible()
     none(await lowContrastText(page, [panel(page)]), 'step 01, Amount: Not sure')
     await page.goto(factUrl('Anyone coming with you?'))
-    await card(page, 'Anyone coming with you?', 'Partner').click()
+    await chooseAndComeBack(page, card(page, 'Anyone coming with you?', 'Partner'))
     await expect(page.getByText('Saved. Tap another answer to change it.')).toBeVisible()
     none(await lowContrastText(page, [panel(page)]), 'step 01, Anyone coming: Partner')
   } finally {
@@ -598,7 +604,8 @@ test('AC10: nothing light-themed remains in dark [step 01]', async ({ page }) =>
     for (const [question, option] of states) {
       await page.setViewportSize(DESKTOP)
       await page.goto(factUrl(question))
-      await card(page, question, option).click()
+      // The tap moves on by itself: the answered question is checked once she is back on it.
+      await chooseAndComeBack(page, card(page, question, option))
       await expect(page.getByText('Saved. Tap another answer to change it.')).toBeVisible()
       await noLightAtBothWidths(page, `step 01, ${question}: ${option}`)
     }
@@ -617,6 +624,8 @@ test('AC10: nothing light-themed remains in dark [step 01]', async ({ page }) =>
         .getByRole('alert')
         .filter({ hasText: "We couldn't save that. Your answer is still here." }),
     ).toBeVisible()
+    // A refused save keeps her on the question, so the alert is checked where she tapped.
+    await expect(page).toHaveURL(/\/onboarding\/facts\/limit$/)
     await noLightAtBothWidths(page, 'step 01, save failed')
     await page.unroute(offline)
   } finally {

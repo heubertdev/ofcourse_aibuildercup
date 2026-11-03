@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { type ReactNode, useId, useState } from 'react'
 import { Button } from '@/shared/components/ui/button'
+import { Spin, Working } from '@/shared/components/Working'
 import type { Staff } from '@/shared/lib/auth/access'
 import { cn } from '@/shared/lib/utils'
 import { articleStart, paragraphSite } from '../../lib/sites'
@@ -13,9 +14,15 @@ import type { CurrentPost } from '../../model/current'
 import type { Fact, Span } from '../../model/types'
 import { type SourceSentence, sourceSentences } from '../../text/sentences'
 import { Control, movesWait, reasonText, tag } from '../parts'
-import { usePostAction } from '../usePostAction'
+import { usePostAction, usePressedAction } from '../usePostAction'
 import type { WorkbenchActions, WorkbenchView } from '../Workbench'
-import { linkLines, SourceFields, type SourceValues, sourceFieldsError } from './SourceForm'
+import {
+  linkLines,
+  SourceFields,
+  type SourceValues,
+  sourceFieldsError,
+  sourceKindLabel,
+} from './SourceForm'
 
 type SourcePaneProps = {
   /** The picked draft (pointers.picked): the paragraphs its bound facts rest on are highlighted (criterion 27). */
@@ -141,7 +148,10 @@ function SourceEdit({
   /** Past the source, the running step in words: the change waits for it (criterion 122). */
   waiting?: string | null
 }) {
-  const { pending, run } = usePostAction()
+  // Which of the two presses is running, so only it waits as "Running…".
+  const { pending, run, pressed, current } = usePressedAction<'remake' | 'resume'>()
+  const remaking = pressed('remake')
+  const resuming = pressed('resume')
   const router = useRouter()
   // Past the source the post is at its ideas or its text: its own address opens the one (GD27).
   const onward = () => router.push(postPath(view.id))
@@ -156,7 +166,7 @@ function SourceEdit({
     (links.length > 0 || text.trim() !== '') &&
     !sameValues(values, saved)
 
-  const remake = () =>
+  const remake = () => {
     run(
       () =>
         actions.remakeAction(view.id, view.version, {
@@ -167,14 +177,16 @@ function SourceEdit({
           language: values.language,
         }),
       'Ideas extracted',
-      onward,
+      { onDone: onward, press: 'remake' },
     )
-  const resume = () =>
+  }
+  const resume = () => {
     run(
       () => actions.continueWithSourceAction(view.id, view.version),
       'Back to the text versions',
-      onward,
+      { onDone: onward, press: 'resume' },
     )
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -187,14 +199,17 @@ function SourceEdit({
       />
       <div className="flex flex-wrap gap-2">
         <Button disabled={pending || !ready || waiting !== null} onClick={remake}>
-          Save and remake
+          {remaking && <Spin />}
+          {remaking ? 'Running…' : 'Save and remake'}
         </Button>
         {canContinue && view.current.facts && (
           <Button variant="outline" disabled={pending} onClick={resume}>
-            Continue with this source
+            {resuming && <Spin />}
+            {resuming ? 'Running…' : 'Continue with this source'}
           </Button>
         )}
       </div>
+      {current !== null && <Working words="Remaking the facts and ideas…" />}
     </div>
   )
 }
@@ -255,8 +270,9 @@ export function SourcePane({ view, viewer, actions }: SourcePaneProps) {
     <div className="flex flex-col gap-8">
       <section aria-labelledby="source-heading" className="flex flex-col gap-4">
         <div className="flex flex-col gap-1">
-          <p className="text-overline uppercase text-muted-foreground">{source.kind}</p>
-          <h2 id="source-heading" className="text-h3 wrap-anywhere">
+          <p className="text-overline uppercase text-muted-foreground">{sourceKindLabel(source)}</p>
+          {/* The article's own title, not the step's name: shown, small. */}
+          <h2 id="source-heading" className="text-h4 wrap-anywhere">
             {source.title}
           </h2>
         </div>
@@ -274,10 +290,8 @@ export function SourcePane({ view, viewer, actions }: SourcePaneProps) {
                 return (
                   <li
                     key={p.ref}
-                    className={cn(
-                      'flex gap-2 px-2 py-1 text-foreground',
-                      used.has(p.ref) && 'bg-muted',
-                    )}
+                    data-used={used.has(p.ref) || undefined}
+                    className="flex gap-2 border border-transparent px-2 py-1 text-foreground data-used:border-border"
                   >
                     <span className="shrink-0 font-heading text-caption text-muted-foreground">
                       {p.ref}
@@ -302,9 +316,9 @@ export function SourcePane({ view, viewer, actions }: SourcePaneProps) {
                               aria-pressed={selected?.id === s.id}
                               onClick={() => setSelected(selected?.id === s.id ? null : s)}
                               className={cn(
-                                'inline cursor-pointer text-left hover:bg-muted',
+                                'inline cursor-pointer text-left underline-offset-2 hover:underline hover:decoration-foreground/40',
                                 selected?.id === s.id &&
-                                  'bg-muted underline decoration-primary underline-offset-2',
+                                  'underline decoration-primary decoration-2 hover:decoration-primary',
                               )}
                             >
                               {marked(s.text, spans, s.start)}

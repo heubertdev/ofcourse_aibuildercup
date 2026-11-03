@@ -17,6 +17,7 @@ export default async function AdminUsersPage({ searchParams }: PageProps<'/admin
   return (
     <>
       <AdminPageHeader
+        kicker="People"
         title="Users"
         lede="Every account, with who is online now. Personal data: for admins only."
       />
@@ -24,6 +25,8 @@ export default async function AdminUsersPage({ searchParams }: PageProps<'/admin
         rows={list.rows}
         total={list.total}
         onlineNow={list.onlineNow}
+        accounts={list.accounts}
+        staff={list.staff}
         params={params}
         now={Date.now()}
         canManageRoles={managesRoles}

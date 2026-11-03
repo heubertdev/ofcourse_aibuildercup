@@ -1,25 +1,57 @@
 'use client'
 
+import { Lightbulb, Link2, Lock, Sparkles } from 'lucide-react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { type FormEvent, type ReactNode, useId, useState, useTransition } from 'react'
+import {
+  type Dispatch,
+  type FormEvent,
+  type ReactNode,
+  type SetStateAction,
+  useId,
+  useState,
+  useTransition,
+} from 'react'
 import { toast } from 'sonner'
-import { Blueprint } from '@/shared/components/Blueprint'
-import { Button } from '@/shared/components/ui/button'
+import { Duck } from '@/shared/components/Duck'
+import motion from '@/shared/components/motion.module.css'
+import { Button, buttonVariants } from '@/shared/components/ui/button'
 import { Checkbox } from '@/shared/components/ui/checkbox'
 import { Input } from '@/shared/components/ui/input'
 import { Label } from '@/shared/components/ui/label'
 import { NativeSelect } from '@/shared/components/ui/native-select'
 import { Textarea } from '@/shared/components/ui/textarea'
+import { Spin, Working } from '@/shared/components/Working'
+import { BOARD_PATH } from '@/shared/lib/auth/gate'
+import { cn } from '@/shared/lib/utils'
 import type { SuggestedSource } from '../../ai/search'
 import { FEED_POST_PAGES } from '../../brands'
 import { LANGUAGES, type Language, type LanguageId } from '../../languages'
 import type { IdeaStart } from '../../lib/idea-start'
-import { SOURCE_ERRORS, SOURCE_LIMITS } from '../../model/artifacts'
+import { IDEA_KIND, SOURCE_ERRORS, SOURCE_LIMITS } from '../../model/artifacts'
 import type { Made, Suggested } from '../../server/commands'
 import { firstChars } from '../../text/script'
+import { usePress } from '../usePostAction'
 
 const NETWORK_ERROR = 'Could not reach the server. Please try again.'
 const DEFAULT_KIND = 'research summary'
+/** What "Make post" and the idea's makes say while the source is read and its ideas found. */
+const READING = 'Reading the source and finding ideas · this can take a minute'
+/** The longest title a source takes, in characters as a reader sees them. */
+const TITLE_MAX = 200
+
+const IDEA_ONLY =
+  'No sources ticked: the post is built from your idea alone, and its source check compares against your idea.'
+
+/**
+ * How a source's kind reads on the post: one made from the idea alone says so; one remade from
+ * links since keeps its kind but is no longer the idea alone.
+ */
+export function sourceKindLabel(source: { kind: string; parts?: unknown[] }): string {
+  return source.kind === IDEA_KIND && (source.parts?.length ?? 0) === 0
+    ? 'From your idea, no outside source'
+    : source.kind
+}
 
 /** The links field's lines, trimmed, blank ones dropped. */
 export function linkLines(links: string): string[] {
@@ -66,7 +98,8 @@ type Failed = { url: string; error: string }
  * its placeholder and help text; "Paste text instead" opens the text box, with `pasteExtra` (the
  * title) above it. More than five links, or
  * links with pasted text, says so under the field and in its description; `failed` lists the
- * links that could not be read.
+ * links that could not be read. `linksLabel` names the links field; without `sources` the links
+ * and the paste box are left out (the idea start finds its own), the failed links still listed.
  */
 export function SourceFields({
   values,
@@ -75,6 +108,8 @@ export function SourceFields({
   onPaste,
   failed,
   pasteExtra,
+  linksLabel = 'Links',
+  sources = true,
 }: {
   values: SourceValues
   onChange: (values: SourceValues) => void
@@ -82,6 +117,8 @@ export function SourceFields({
   onPaste: () => void
   failed: Failed[]
   pasteExtra?: ReactNode
+  linksLabel?: string
+  sources?: boolean
 }) {
   const ids = useId()
   // A field with a limit holds that many characters as a reader sees them (a Devanagari conjunct,
@@ -92,6 +129,15 @@ export function SourceFields({
       [key]: max === undefined ? e.target.value : firstChars(e.target.value, max),
     })
   const error = sourceFieldsError(values, pasting)
+  const unread = failed.length > 0 && (
+    <ul aria-label="Links not read" className="flex flex-col gap-1 text-caption">
+      {failed.map((f) => (
+        <li key={f.url} className="wrap-anywhere text-destructive">
+          {f.url}: {SOURCE_ERRORS.unread}
+        </li>
+      ))}
+    </ul>
+  )
 
   return (
     <>
@@ -113,36 +159,32 @@ export function SourceFields({
           The post is written in this language. Sources stay as they are.
         </p>
       </div>
-      <div className="flex flex-col gap-2">
-        <Label htmlFor={`${ids}-links`}>Links</Label>
-        <Textarea
-          id={`${ids}-links`}
-          value={values.links}
-          rows={3}
-          maxLength={12_000}
-          placeholder="https://… one link per line, up to five"
-          aria-describedby={`${ids}-links-note${error ? ` ${ids}-links-error` : ''}`}
-          aria-invalid={error !== null || undefined}
-          onChange={set('links')}
-        />
-        <p id={`${ids}-links-note`} className="text-caption text-muted-foreground">
-          We read each article and pull out its points.
-        </p>
-        {error && (
-          <p id={`${ids}-links-error`} className="text-caption text-destructive">
-            {error}
+      {sources ? (
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={`${ids}-links`}>{linksLabel}</Label>
+          <Textarea
+            id={`${ids}-links`}
+            value={values.links}
+            rows={3}
+            maxLength={12_000}
+            placeholder="https://… one link per line, up to five"
+            aria-describedby={`${ids}-links-note${error ? ` ${ids}-links-error` : ''}`}
+            aria-invalid={error !== null || undefined}
+            onChange={set('links')}
+          />
+          <p id={`${ids}-links-note`} className="text-caption text-muted-foreground">
+            We read each article and pull out its points.
           </p>
-        )}
-        {failed.length > 0 && (
-          <ul aria-label="Links not read" className="flex flex-col gap-1 text-caption">
-            {failed.map((f) => (
-              <li key={f.url} className="wrap-anywhere text-destructive">
-                {f.url}: {SOURCE_ERRORS.unread}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+          {error && (
+            <p id={`${ids}-links-error`} className="text-caption text-destructive">
+              {error}
+            </p>
+          )}
+          {unread}
+        </div>
+      ) : (
+        unread
+      )}
       <div className="flex flex-col gap-2">
         <Label htmlFor={`${ids}-framing`}>What do you want this post to say?</Label>
         <Input
@@ -170,7 +212,7 @@ export function SourceFields({
           Kept as your opinion, never used as a fact. Optional.
         </p>
       </div>
-      {pasting ? (
+      {!sources ? null : pasting ? (
         <>
           {pasteExtra}
           <div className="flex flex-col gap-2">
@@ -186,7 +228,7 @@ export function SourceFields({
           </div>
         </>
       ) : (
-        <Button type="button" variant="outline" className="self-start" onClick={onPaste}>
+        <Button type="button" variant="text" className="self-start" onClick={onPaste}>
           Paste text instead
         </Button>
       )}
@@ -197,32 +239,52 @@ export function SourceFields({
 /** How many suggestions are ticked when they arrive: the official ones among them (GD29). */
 const TOP_TICKED = 3
 
+type PostKind = 'feed' | 'blog'
+/** The idea start's two makes: a blog from the pages first, or the feed post straight away. */
+const IDEA_MAKES: { kind: PostKind; label: string }[] = [
+  { kind: 'blog', label: 'Write a blog first' },
+  { kind: 'feed', label: 'Go straight to the post' },
+]
+
+/** The idea start's search: the idea typed, the pages found for it, and which are ticked. */
+type IdeaSearch = {
+  idea: string
+  found: { sources: SuggestedSource[]; entryPoint: string | null } | null
+  ticked: string[]
+}
+
 /**
  * "Start from an idea" (BR12, BR13): the idea, then "Find sources", which lists the pages Google
  * Search suggests with a tick each (the official ones of the top three ticked, GD29), their title,
  * site and why, and Google's search entry point in a sandboxed frame, as its grounding display
- * rules require: the markup is Google's, so it never runs in the page. "Use these" hands the
- * ticked pages on, in the list's order; nothing is used unticked.
+ * rules require: the markup is Google's, so it never runs in the page. "Write a blog first" and
+ * "Go straight to the post" hand the ticked pages on, in the list's order, with the kind to make;
+ * nothing is used unticked. With none ticked (no search run, nothing found, or all unticked) they
+ * hand on none, and the post is made from the idea alone, as the note under them says. The search
+ * is the form's, so a switch to the blog start and back keeps the pages found (a paid search).
  */
 function IdeaSources({
   find,
   onUse,
   busy,
-  initial = '',
+  using,
+  search: kept,
+  onSearch,
 }: {
   find: (input: unknown) => Promise<Suggested>
-  onUse: (links: string[]) => void
+  onUse: (links: string[], kind: PostKind) => void
   busy: boolean
-  /** The idea it opens with, from the Ideas queue or an evidence gap. */
-  initial?: string
+  /** The make pressed, while its post is being made. */
+  using: PostKind | null
+  search: IdeaSearch
+  onSearch: Dispatch<SetStateAction<IdeaSearch>>
 }) {
   const ids = useId()
-  const [idea, setIdea] = useState(initial)
-  const [found, setFound] = useState<{
-    sources: SuggestedSource[]
-    entryPoint: string | null
-  } | null>(null)
-  const [ticked, setTicked] = useState<string[]>([])
+  const { idea, found, ticked } = kept
+  const setIdea = (next: string) => onSearch((was) => ({ ...was, idea: next }))
+  const setFound = (next: IdeaSearch['found']) => onSearch((was) => ({ ...was, found: next }))
+  const setTicked = (next: (was: string[]) => string[]) =>
+    onSearch((was) => ({ ...was, ticked: next(was.ticked) }))
   const [error, setError] = useState<string | null>(null)
   const [finding, startFinding] = useTransition()
   const empty = idea.trim() === ''
@@ -240,13 +302,14 @@ function IdeaSources({
           setFound(null)
           return
         }
-        setFound({ sources: res.sources, entryPoint: res.entryPoint })
-        setTicked(
-          res.sources
+        onSearch((was) => ({
+          ...was,
+          found: { sources: res.sources, entryPoint: res.entryPoint },
+          ticked: res.sources
             .slice(0, TOP_TICKED)
             .filter((s) => s.official)
             .map((s) => s.url),
-        )
+        }))
       } catch {
         setError(NETWORK_ERROR)
       }
@@ -277,8 +340,10 @@ function IdeaSources({
         </p>
         <div className="flex items-center gap-4">
           <Button type="button" variant="outline" disabled={empty || finding} onClick={search}>
+            {finding && <Spin />}
             {finding ? 'Finding…' : 'Find sources'}
           </Button>
+          {finding && <Working words="Searching for sources…" />}
           {error && (
             <p role="alert" className="text-caption text-destructive">
               {error}
@@ -320,29 +385,108 @@ function IdeaSources({
               className="h-20 w-full"
             />
           )}
-          <div className="flex items-center gap-4">
-            <Button
-              type="button"
-              disabled={busy || chosen.length === 0 || tooMany}
-              onClick={() => onUse(chosen)}
-            >
-              Use these
-            </Button>
-            {tooMany && <p className="text-caption text-destructive">{SOURCE_ERRORS.links}</p>}
-          </div>
         </div>
       )}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-4">
+          {IDEA_MAKES.map(({ kind, label }) => (
+            <Button
+              key={kind}
+              type="button"
+              variant={kind === 'feed' ? 'outline' : 'default'}
+              disabled={busy || empty || tooMany}
+              onClick={() => onUse(chosen, kind)}
+            >
+              {using === kind && <Spin />}
+              {using === kind ? 'Running…' : label}
+            </Button>
+          ))}
+          {using && <Working words={READING} />}
+          {tooMany && <p className="text-caption text-destructive">{SOURCE_ERRORS.links}</p>}
+        </div>
+        {chosen.length === 0 && <p className="text-caption text-muted-foreground">{IDEA_ONLY}</p>}
+      </div>
     </div>
   )
 }
 
+/** Where a new post starts: a blog already written, or an idea to find sources for. */
+const STARTS = [
+  { id: 'blog', label: 'From a blog', about: 'One to five links, or pasted text', icon: Link2 },
+  { id: 'idea', label: 'From an idea', about: 'Gemini finds pages to read', icon: Lightbulb },
+] as const
+type Start = (typeof STARTS)[number]['id']
+
+/** The workbench's steps as "What happens next" lists them, in the step bar's words. */
+const NEXT_STEPS = [
+  { label: 'Source', about: 'Read the links, pull out the points' },
+  { label: 'Ideas', about: 'Angles to tell it' },
+  { label: 'Outline', about: 'One line per slide' },
+  { label: 'Text', about: 'The words on each slide' },
+  { label: 'Images', about: 'Art in the page’s style' },
+  { label: 'Settings', about: 'Where it shows, and to whom' },
+  { label: 'Review', about: 'A reviewer checks the facts' },
+  { label: 'Live', about: 'In the feed, or exported' },
+] as const
+
 /**
- * Links, or pasted text, with a framing line and notes, and "Make post" (criteria 93, 94;
- * GD18–GD21): the server reads each link, extracts the facts, and drafts on its own once the post
- * opens. The request id is made once, when the form mounts, and is the new post's id: a double
- * submit or a "Try again" after a failure is still one post. A failure keeps every field as typed
- * (criterion 5); when no link could be read, each is listed under the field. The blog form
- * (BR1) is the same, and its "Make blog" makes a blog.
+ * The blue panel beside a new feed post's form: the eight steps the post goes through, the first
+ * lit, and the reviewer's lock. The band's panel style (motion.grid), marked light like the others.
+ */
+function WhatHappensNext() {
+  return (
+    <aside
+      aria-labelledby="what-happens-next"
+      data-theme="light"
+      className={cn(
+        motion.grid,
+        'relative flex flex-col gap-4 overflow-hidden px-6 py-7 text-panel-foreground @5xl:sticky @5xl:top-6',
+      )}
+    >
+      <Duck size="3rem" className="relative size-12 -scale-x-100 object-contain" />
+      <h2 id="what-happens-next" className="relative text-h3 text-panel-foreground">
+        What happens next
+      </h2>
+      <ol className="relative flex flex-col">
+        {NEXT_STEPS.map((s, i) => (
+          <li
+            key={s.label}
+            className="relative flex gap-3 pb-3.5 not-last:before:absolute not-last:before:top-7 not-last:before:bottom-0 not-last:before:left-3.5 not-last:before:w-px not-last:before:bg-panel-foreground/40"
+          >
+            <span
+              className={cn(
+                'flex size-7 shrink-0 items-center justify-center border border-panel-foreground/70 font-heading font-semibold',
+                i === 0 && 'bg-panel-foreground text-panel',
+              )}
+            >
+              {i + 1}
+            </span>
+            <span className="flex flex-col">
+              <span className="font-heading text-h4 font-semibold">{s.label}</span>
+              <span className="text-caption text-panel-foreground dark:text-panel-foreground/78">
+                {s.about}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      <p className="relative flex items-center gap-2 border-t border-panel-foreground/35 pt-3.5 text-caption">
+        <Lock aria-hidden="true" strokeWidth={1.5} className="size-icon-sm shrink-0" />
+        Nothing reaches students until a reviewer approves it.
+      </p>
+    </aside>
+  )
+}
+
+/**
+ * "Start from" a blog or an idea, then the source (criteria 1–4; 93, 94; GD18–GD21). From a blog:
+ * its link, or pasted text, with a framing line and notes, and "Make post", which always makes a
+ * feed post. From an idea: the found pages ticked, or with none the idea itself as the source, then
+ * "Write a blog first" (a blog) or "Go straight to the post" (a feed post). The server reads each link, extracts the facts, and drafts on its own
+ * once the post opens. The request ids are made once, when the form mounts, one per kind of post,
+ * and each is the new post's id: a double submit or a "Try again" after a failure is still one
+ * post, and the other kind is always another. A failure keeps every
+ * field as typed (criterion 5); when no link could be read, each is listed.
  */
 export function SourceForm({
   actions,
@@ -354,18 +498,21 @@ export function SourceForm({
     makePostAction: (input: unknown) => Promise<Made>
     suggestSourcesAction: (input: unknown) => Promise<Suggested>
   }
-  /** What "Make" makes: a feed post, or a blog. */
-  postKind?: 'feed' | 'blog'
+  /** The page it is on: New feed post, or New blog (BR1), which opens on the idea start. */
+  postKind?: PostKind
   /**
-   * The idea it was opened with (lib/idea-start.ts): the form starts on "Start from an idea" with
-   * it typed in, and a queue idea's id goes with "Make post", which records the post on it.
+   * The idea it was opened with (lib/idea-start.ts): the form starts from an idea with it typed
+   * in, and a queue idea's id goes with the make, which records the post on it.
    */
   idea?: IdeaStart | null
 }) {
-  const noun = postKind === 'blog' ? 'blog' : 'post'
   const router = useRouter()
   const ids = useId()
-  const [requestId] = useState(() => crypto.randomUUID())
+  // One per kind: a lost response to a blog's make can never answer the feed post's, or back.
+  const [requestIds] = useState<Record<PostKind, string>>(() => ({
+    feed: crypto.randomUUID(),
+    blog: crypto.randomUUID(),
+  }))
   const [values, setValues] = useState<SourceValues>({
     // English unless the editor chooses another (GD36, GD29).
     language: 'en',
@@ -375,7 +522,14 @@ export function SourceForm({
     text: '',
   })
   const [pasting, setPasting] = useState(false)
-  const [fromIdea, setFromIdea] = useState(!!idea)
+  const [start, setStart] = useState<Start>(idea || postKind === 'blog' ? 'idea' : 'blog')
+  const fromIdea = start === 'idea'
+  // It opens with the idea from the Ideas queue or an evidence gap.
+  const [search, setSearch] = useState<IdeaSearch>({
+    idea: idea?.text ?? '',
+    found: null,
+    ticked: [],
+  })
   const [title, setTitle] = useState('')
   const [kind, setKind] = useState(DEFAULT_KIND)
   // The page the post is made for (criterion 105); none until the editor picks one, since a new
@@ -384,29 +538,41 @@ export function SourceForm({
   const [error, setError] = useState<string | null>(null)
   const [failed, setFailed] = useState<Failed[]>([])
   const [pending, startTransition] = useTransition()
+  // Which press is making the post: the form's own button, or one of the idea's makes.
+  const { mark, pressed } = usePress<'form' | PostKind>(pending)
+  const making = pressed('form')
+  const using = pressed('blog') ? 'blog' : pressed('feed') ? 'feed' : null
   const links = linkLines(values.links)
   // Pasted text needs its title; links alone may take the first page's.
   const pasted = pasting && values.text.trim() !== ''
   const empty = pasted ? title.trim() === '' : links.length === 0
   const blocked = empty || sourceFieldsError(values, pasting) !== null
 
-  /** "Make post" with these links, from the form or from "Use these". */
-  const make = (sending: string[]) => {
+  /**
+   * Makes a post of `makes` from this source: the blog start's "Make post" (its links or pasted
+   * text), or an idea's make with the ticked pages, or with none the idea itself.
+   */
+  const make = (
+    sent: { links: string[]; title: string; kind: string; text: string },
+    makes: PostKind,
+    from: 'form' | PostKind,
+  ) => {
+    mark(from)
     setError(null)
     setFailed([])
     startTransition(async () => {
       try {
         const res = await actions.makePostAction({
-          requestId,
-          title: pasting ? title : '',
-          kind,
-          text: pasting ? values.text : '',
-          links: sending,
+          requestId: requestIds[makes],
+          title: sent.title,
+          kind: sent.kind,
+          text: sent.text,
+          links: sent.links,
           framing: values.framing,
           notes: values.notes,
           language: values.language,
           pageBrandId: page === '' ? null : page,
-          postKind,
+          postKind: makes,
           ...(idea?.ideaId ? { ideaId: idea.ideaId } : {}),
         })
         if (!res.ok) {
@@ -424,30 +590,96 @@ export function SourceForm({
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!blocked) make(links)
+    // From an idea only its own makes send; a blog always makes a feed post (criterion 2).
+    if (fromIdea || blocked) return
+    const text = pasting ? values.text : ''
+    make({ links, title: pasting ? title : '', kind, text }, 'feed', 'form')
   }
 
-  /** The ticked pages in the Links field, then "Make post" as for links (GD18, GD19, BR13). */
-  const useSources = (urls: string[]) => {
-    const next = { ...values, links: urls.join('\n') }
-    setValues(next)
-    // Pasted text with the links says so under the field, as typed links would.
-    if (sourceFieldsError(next, pasting) === null) make(urls)
+  /**
+   * An idea's make: the ticked pages, or with none the idea alone as the source, titled by it. The
+   * framing and notes go as their own fields, as always: they steer the post, never become facts.
+   */
+  const makeFromIdea = (urls: string[], makes: PostKind) => {
+    if (urls.length > 0) {
+      make({ links: urls, title: '', kind, text: '' }, makes, makes)
+      return
+    }
+    const idea = search.idea.trim()
+    make(
+      { links: [], title: firstChars(idea, TITLE_MAX), kind: IDEA_KIND, text: idea },
+      makes,
+      makes,
+    )
   }
 
-  return (
-    <Blueprint
-      as="form"
+  const form = (
+    <form
       aria-label={postKind === 'blog' ? 'New blog' : 'New feed post'}
       onSubmit={submit}
-      className="@container flex max-w-3xl flex-col gap-6 p-6"
+      className="@container flex max-w-2xl min-w-0 flex-col gap-6"
     >
+      <div className="flex flex-col gap-2">
+        <p id={`${ids}-start`} className="font-medium">
+          Start from
+        </p>
+        {/* Two option cards: each card's title names its radio, its line describes it. */}
+        <div
+          role="radiogroup"
+          aria-labelledby={`${ids}-start`}
+          className="grid grid-cols-2 gap-3 @max-xl:grid-cols-1"
+        >
+          {STARTS.map((s) => (
+            <label
+              key={s.id}
+              className="group relative grid cursor-pointer grid-cols-[auto_1fr] items-center gap-x-3 gap-y-0.5 border border-foreground/25 py-3.5 pr-10 pl-3.5 transition-colors hover:border-foreground/55 has-checked:border-primary has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-ring"
+            >
+              <input
+                type="radio"
+                name={`${ids}-start`}
+                value={s.id}
+                checked={start === s.id}
+                aria-labelledby={`${ids}-start-${s.id}`}
+                aria-describedby={`${ids}-start-${s.id}-about`}
+                onChange={() => {
+                  // A refusal belongs to the start that made it.
+                  setStart(s.id)
+                  setError(null)
+                  setFailed([])
+                }}
+                className="peer sr-only"
+              />
+              <s.icon
+                aria-hidden="true"
+                strokeWidth={1.5}
+                className="row-span-2 size-icon-lg text-accent-700"
+              />
+              <span id={`${ids}-start-${s.id}`} className="font-heading text-h4 font-semibold">
+                {s.label}
+              </span>
+              <span
+                id={`${ids}-start-${s.id}-about`}
+                className="text-caption text-muted-foreground"
+              >
+                {s.about}
+              </span>
+              {/* The drawn radio: a ring, filled while chosen. */}
+              <span
+                aria-hidden="true"
+                className="absolute top-1/2 right-3.5 size-4 -translate-y-1/2 rounded-full border border-foreground/45 peer-checked:border-accent-700 peer-checked:bg-[radial-gradient(circle,var(--color-accent-700)_0_0.25rem,transparent_0.2625rem)]"
+              />
+            </label>
+          ))}
+        </div>
+      </div>
       <SourceFields
         values={values}
         onChange={setValues}
         pasting={pasting}
         onPaste={() => setPasting(true)}
         failed={failed}
+        linksLabel="Blog link"
+        sources={!fromIdea}
         pasteExtra={
           <div className="grid gap-4 @xl:grid-cols-[2fr_1fr]">
             <div className="flex flex-col gap-2">
@@ -455,7 +687,7 @@ export function SourceForm({
               <Input
                 id={`${ids}-title`}
                 value={title}
-                onChange={(e) => setTitle(firstChars(e.target.value, 200))}
+                onChange={(e) => setTitle(firstChars(e.target.value, TITLE_MAX))}
               />
             </div>
             <div className="flex flex-col gap-2">
@@ -470,23 +702,6 @@ export function SourceForm({
           </div>
         }
       />
-      {fromIdea ? (
-        <IdeaSources
-          find={actions.suggestSourcesAction}
-          onUse={useSources}
-          busy={pending}
-          initial={idea?.text}
-        />
-      ) : (
-        <Button
-          type="button"
-          variant="outline"
-          className="self-start"
-          onClick={() => setFromIdea(true)}
-        >
-          Start from an idea
-        </Button>
-      )}
       <div className="flex flex-col gap-2">
         <Label htmlFor={`${ids}-page`}>Page</Label>
         <NativeSelect
@@ -506,16 +721,56 @@ export function SourceForm({
           The drafts and covers follow its design language, if it has one.
         </p>
       </div>
-      <div className="flex items-center gap-4">
-        <Button type="submit" disabled={blocked || pending}>
-          {pending ? 'Running…' : error ? 'Try again' : `Make ${noun}`}
-        </Button>
-        {error && (
-          <p role="alert" className="text-caption text-destructive">
-            {error}
-          </p>
-        )}
+      {fromIdea && (
+        <IdeaSources
+          find={actions.suggestSourcesAction}
+          onUse={makeFromIdea}
+          busy={pending}
+          using={using}
+          search={search}
+          onSearch={setSearch}
+        />
+      )}
+      {(!fromIdea || error) && (
+        <div className="flex flex-wrap items-center gap-4">
+          {!fromIdea && (
+            <Button
+              type="submit"
+              disabled={blocked || pending}
+              className="h-11 px-5 @max-xl:flex-1"
+            >
+              {making ? (
+                <Spin />
+              ) : (
+                <Sparkles aria-hidden="true" strokeWidth={1.5} className="size-icon" />
+              )}
+              {making ? 'Running…' : error ? 'Try again' : 'Make post'}
+            </Button>
+          )}
+          {!making && (
+            <Link href={BOARD_PATH} className={buttonVariants({ variant: 'text' })}>
+              Cancel
+            </Link>
+          )}
+          {making && <Working words={READING} />}
+          {error && (
+            <p role="alert" className="text-caption text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </form>
+  )
+
+  // A blog's steps are not a feed post's, so only New feed post lists them beside the form.
+  if (postKind === 'blog') return form
+  return (
+    <div className="@container">
+      <div className="grid items-start gap-8 @5xl:grid-cols-[minmax(0,1fr)_22rem]">
+        {form}
+        <WhatHappensNext />
       </div>
-    </Blueprint>
+    </div>
   )
 }
